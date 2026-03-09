@@ -4,7 +4,11 @@ pragma solidity ^0.8.24;
 /**
  * @title ReverseAuction
  * @notice A reverse auction with hidden bids using commit-reveal scheme.
- *         Lowest unique bid wins. Challenge-gated participation.
+ *         Lowest bid wins. Challenge-gated participation (e.g., CTF).
+ *
+ * Use case: A company (auctioneer) posts a challenge (e.g., CTF). Security
+ * researchers who solve it can bid to offer their services. The lowest
+ * bidder wins the contract — sellers competing on price.
  *
  * Cryptographic primitives used:
  *   - keccak256: commit-reveal hiding & binding
@@ -17,7 +21,7 @@ contract ReverseAuction {
     enum Phase { COMMIT, REVEAL, SETTLED }
 
     struct Commit {
-        bytes32 hash;       // keccak256(abi.encodePacked(amount, secret exploit))
+        bytes32 hash;       // keccak256(abi.encodePacked(amount, secret))
         uint256 deposit;    // ETH locked with commit
         bool revealed;      // whether bid was revealed
         uint256 revealedAmt;// the actual bid amount (set on reveal)
@@ -28,7 +32,7 @@ contract ReverseAuction {
     Phase   public phase;
 
     uint256 public commitDeadline;
-    uint256 public revealDeadline;  // bids prices are revealed + winner
+    uint256 public revealDeadline;
 
     // challenge whitelist (mock verification)
     mapping(address => bool) public challengePassed;
@@ -42,9 +46,6 @@ contract ReverseAuction {
     uint256 public winningBid;
     bool    public settled;
 
-    // track bid counts for "lowest unique" logic
-    mapping(uint256 => uint256) private bidCount;      // amount → how many times it was bid
-    mapping(uint256 => address) private bidFirstAddr;   // amount → first address that bid it (only relevant if unique)
 
     // ─── Events ──────────────────────────────────────────────────────────
     event ChallengeVerified(address indexed user);
@@ -168,12 +169,6 @@ contract ReverseAuction {
         c.revealed = true;
         c.revealedAmt = _amount;
 
-        // Track for lowest-unique determination
-        bidCount[_amount]++;
-        if (bidCount[_amount] == 1) {
-            bidFirstAddr[_amount] = msg.sender;
-        }
-
         // Refund excess deposit immediately
         uint256 excess = c.deposit - _amount;
         if (excess > 0) {
@@ -188,14 +183,15 @@ contract ReverseAuction {
 
     // ─── Settlement ──────────────────────────────────────────────────────
     /**
-     * @dev Internal: find the lowest unique bid and pay the winner.
+     * @dev Internal: find the lowest bid and pay the winner.
      *      Non-revealers forfeit their deposit (anti-griefing).
+     *      This is a sellers' auction — lowest price wins the contract.
      */
     function _settle() internal {
         settled = true;
 
-        // 1. Find lowest unique bid
-        uint256 lowestUnique = type(uint256).max;
+        // 1. Find lowest bid
+        uint256 lowestBid = type(uint256).max;
         address lowestAddr = address(0);
 
         for (uint256 i = 0; i < bidders.length; i++) {
@@ -208,9 +204,8 @@ contract ReverseAuction {
                 continue;
             }
 
-            uint256 amt = c.revealedAmt;
-            if (bidCount[amt] == 1 && amt < lowestUnique) {
-                lowestUnique = amt;
+            if (c.revealedAmt < lowestBid) {
+                lowestBid = c.revealedAmt;
                 lowestAddr = b;
             }
         }
@@ -218,34 +213,23 @@ contract ReverseAuction {
         // 2. If we found a winner
         if (lowestAddr != address(0)) {
             winner = lowestAddr;
-            winningBid = lowestUnique;
-            emit AuctionSettled(lowestAddr, lowestUnique);
+            winningBid = lowestBid;
+            emit AuctionSettled(lowestAddr, lowestBid);
         }
 
-        // 3. Refund losing revealers (their deposit == their bid amount after reveal)
+        // 3. Refund all revealers (they are sellers, not buyers — their
+        //    deposits are just collateral to ensure they reveal)
         for (uint256 i = 0; i < bidders.length; i++) {
             address b = bidders[i];
             Commit storage c = commits[b];
 
-            if (c.revealed && b != winner && c.deposit > 0) {
+            if (c.revealed && c.deposit > 0) {
                 uint256 refund = c.deposit;
                 c.deposit = 0;
                 (bool ok, ) = payable(b).call{value: refund}("");
-                require(ok, "Loser refund failed");
+                require(ok, "Refund failed");
                 emit Refunded(b, refund);
             }
-        }
-
-        // 4. Pay the winner (they get their own bid back — in a real auction
-        //    the "prize" would be an NFT/item. Here the winner just pays the
-        //    winning bid to the auctioneer and gets back nothing extra,
-        //    simulating the price they pay for the auctioned item.)
-        if (winner != address(0)) {
-            uint256 payment = commits[winner].deposit;
-            commits[winner].deposit = 0;
-            // Send winning bid amount to the auctioneer (owner)
-            (bool ok, ) = payable(owner).call{value: payment}("");
-            require(ok, "Winner payment to owner failed");
         }
     }
 
