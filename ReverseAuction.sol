@@ -8,7 +8,7 @@ pragma solidity ^0.8.24;
  *
  * Use case: A company (auctioneer) posts a challenge (e.g., CTF). Security
  * researchers who solve it can bid to offer their services. The lowest
- * bidder wins the contract — sellers competing on price.
+ * bidder wins the contract - sellers competing on price.
  *
  * Cryptographic primitives used:
  *   - keccak256: commit-reveal hiding & binding
@@ -22,7 +22,7 @@ contract ReverseAuction {
 
     struct Commit {
         bytes32 hash;       // keccak256(abi.encodePacked(amount, secret))
-        uint256 deposit;    // ETH locked with commit
+        uint256 deposit;    // ETH locked with commit. Must be > actual bid for privacy
         bool revealed;      // whether bid was revealed
         uint256 revealedAmt;// the actual bid amount (set on reveal)
     }
@@ -48,15 +48,16 @@ contract ReverseAuction {
 
 
     // ─── Events ──────────────────────────────────────────────────────────
-    event ChallengeVerified(address indexed user);
-    event BidCommitted(address indexed bidder, bytes32 hash);
-    event BidRevealed(address indexed bidder, uint256 amount);
-    event AuctionSettled(address indexed winner, uint256 winningBid);
-    event PhaseAdvanced(Phase newPhase);
-    event Refunded(address indexed bidder, uint256 amount);
-    event DepositForfeited(address indexed bidder, uint256 amount);
+    event ChallengeVerified(address indexed user);                      // Emmited by the buyer, signals that a seller has been whitelisted.
+    event BidCommitted(address indexed bidder, bytes32 hash);           // Emitted by a seller when when they commit to a bid
+    event BidRevealed(address indexed bidder, uint256 amount);          // Emitted by a seller when 
+    event AuctionSettled(address indexed winner, uint256 winningBid);   // Emitted by a seller when they successfully call revealBid. It makes their bid public
+    event PhaseAdvanced(Phase newPhase);                                // Emitted by the buyer, broadcasts that the cnotract has entered a new phase.
+    event Refunded(address indexed bidder, uint256 amount);             // Emitted by the buyer at the reveal phase if deposit > bid and in the settle phase if seller didn't win the auction
+    event DepositForfeited(address indexed bidder, uint256 amount);     // Emitted by the buyer for sellers you commited a deposit but never revealed, mean to discourage greifing and spam
 
     // ─── Modifiers ───────────────────────────────────────────────────────
+    // Modifiers ensure a condition is met before a function call
     modifier onlyOwner() {
         require(msg.sender == owner, "Not owner");
         _;
@@ -97,7 +98,11 @@ contract ReverseAuction {
     // ─── Phase Management ────────────────────────────────────────────────
     /**
      * @notice Advance phase. Can be called by anyone once the deadline has passed,
-     *         or by the owner at any time (for demo flexibility).
+     *              or by the owner at any time (ONLY for demo flexibility).
+     *              
+     * @dev In production use cases the owner can call advancePhase skipping the
+     *              reveal phase and scamming sellers of their deposits, this functionality
+     *              is only for demo purposes. 
      */
     function advancePhase() external {
         if (phase == Phase.COMMIT) {
@@ -131,8 +136,8 @@ contract ReverseAuction {
      * deposit can be larger.
      */
     function commitBid(bytes32 _hash) external payable inPhase(Phase.COMMIT) {
-        require(verifyChallenge(msg.sender), "Challenge not passed");
-        require(commits[msg.sender].hash == bytes32(0), "Already committed");
+        require(verifyChallenge(msg.sender), "Challenge not passed");           // Ensures that there are no double commits
+        require(commits[msg.sender].hash == bytes32(0), "Already committed");   // Ensures 
         require(msg.value > 0, "Must deposit ETH");
 
         commits[msg.sender] = Commit({
@@ -149,7 +154,7 @@ contract ReverseAuction {
     // ─── Reveal Phase ────────────────────────────────────────────────────
     /**
      * @notice Reveal a previously committed bid. The contract recomputes the
-     *         hash and checks it matches the commit — this is the **binding**
+     *         hash and checks it matches the commit, this is the **binding**
      *         property of keccak256: the bidder cannot change their bid.
      * @param _amount  the bid amount in wei
      * @param _secret  the secret used when committing
@@ -159,9 +164,9 @@ contract ReverseAuction {
         require(c.hash != bytes32(0), "No commit found");
         require(!c.revealed, "Already revealed");
 
-        // Verify hash — binding property
+        // Verify hash - binding property
         bytes32 computed = keccak256(abi.encodePacked(_amount, _secret));
-        require(computed == c.hash, "Hash mismatch — bid tampered or wrong secret");
+        require(computed == c.hash, "Hash mismatch - bid tampered or wrong secret");
 
         // Deposit must cover bid
         require(c.deposit >= _amount, "Deposit less than bid");
@@ -185,7 +190,7 @@ contract ReverseAuction {
     /**
      * @dev Internal: find the lowest bid and pay the winner.
      *      Non-revealers forfeit their deposit (anti-griefing).
-     *      This is a sellers' auction — lowest price wins the contract.
+     *      This is a sellers' auction - lowest price wins the contract.
      */
     function _settle() internal {
         settled = true;
@@ -217,7 +222,7 @@ contract ReverseAuction {
             emit AuctionSettled(lowestAddr, lowestBid);
         }
 
-        // 3. Refund all revealers (they are sellers, not buyers — their
+        // 3. Refund all revealers (they are sellers, not buyers - their
         //    deposits are just collateral to ensure they reveal)
         for (uint256 i = 0; i < bidders.length; i++) {
             address b = bidders[i];

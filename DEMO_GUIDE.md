@@ -51,7 +51,7 @@ revealBid(200, 0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabc
 ### Step 6: Settle
 Call `advancePhase()` → contract settles automatically.
 
-Check: `winner()` → Bidder1's address (lowest unique bid: 100 < 200)
+Check: `winner()` → Bidder1's address (lowest bid: 100 < 200)
 Check: `winningBid()` → 100
 
 ## Edge Case Demos
