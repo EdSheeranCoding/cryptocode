@@ -14,7 +14,7 @@
 1. **Keccak-256 is secure** — pre-image and collision resistance hold.
 2. **Ethereum consensus is honest** — transactions are eventually included and ordered fairly (within the bounds of MEV).
 3. **The auctioneer is semi-honest** — they follow the protocol but might try to gain an advantage. Time-based deadlines limit their ability to manipulate phase transitions.
-4. **Bidders are rational** — they are incentivized to reveal (deposit forfeiture penalty) and to bid honestly (lowest unique bid wins).
+4. **Bidders are rational** — they are incentivized to reveal (deposit forfeiture penalty) and to bid competitively (lowest bid wins the contract).
 
 ## Protocol Flow
 
@@ -57,10 +57,10 @@
 ┌─────────────────────────────────────────────────────────┐
 │               SETTLEMENT PHASE                           │
 │                                                          │
-│  1. Find lowest unique bid among revealed bids           │
-│  2. Winner's bid goes to auctioneer (payment for item)   │
-│  3. All other revealers get full refund                   │
-│  4. Non-revealer deposits go to auctioneer               │
+│  1. Find lowest bid among revealed bids                   │
+│  2. Winner awarded the service contract                   │
+│  3. All revealers get deposits refunded                   │
+│  4. Non-revealer deposits forfeited to auctioneer         │
 │  5. Emit AuctionSettled event                             │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -91,6 +91,6 @@ Excess deposit (deposit minus actual bid) is refunded immediately upon reveal.
 | Bidder commits but never reveals | Deposit forfeited to auctioneer |
 | Bidder tries to reveal a different amount | Hash mismatch → `revealBid` reverts |
 | No bids at all | Settlement completes with no winner |
-| All bids are tied (no unique bid) | No winner; all revealed bidders refunded |
+| Multiple bidders tie for lowest | First revealer with that amount wins |
 | Bidder tries to bid without passing challenge | `commitBid` reverts with "Challenge not passed" |
 | Bidder tries to commit twice | `commitBid` reverts with "Already committed" |
