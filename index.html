@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hidden Reverse Auction</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f0f1a; color: #e0e0e0; min-height: 100vh; }
+        .container { max-width: 720px; margin: 0 auto; padding: 2rem 1rem; }
+        h1 { text-align: center; margin-bottom: 0.5rem; color: #7c8aff; }
+        .subtitle { text-align: center; color: #888; margin-bottom: 2rem; font-size: 0.9rem; }
+        .card { background: #1a1a2e; border: 1px solid #2a2a40; border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; }
+        .card h2 { color: #7c8aff; margin-bottom: 1rem; font-size: 1.1rem; }
+        .phase-badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: 600; }
+        .phase-COMMIT { background: #1a3a1a; color: #4caf50; }
+        .phase-REVEAL { background: #3a3a1a; color: #ff9800; }
+        .phase-SETTLED { background: #3a1a1a; color: #f44336; }
+        label { display: block; margin-bottom: 4px; font-size: 0.85rem; color: #aaa; }
+        input, button { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2a40; background: #12121f; color: #e0e0e0; font-size: 0.95rem; margin-bottom: 0.75rem; }
+        input:focus { outline: none; border-color: #7c8aff; }
+        button { background: #7c8aff; color: #fff; border: none; cursor: pointer; font-weight: 600; transition: background 0.2s; }
+        button:hover { background: #5a6aff; }
+        button:disabled { background: #333; cursor: not-allowed; }
+        .btn-secondary { background: #2a2a40; }
+        .btn-secondary:hover { background: #3a3a50; }
+        .status { padding: 10px; border-radius: 8px; background: #12121f; font-family: monospace; font-size: 0.85rem; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; }
+        .info-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2a2a40; }
+        .info-row:last-child { border-bottom: none; }
+        .info-label { color: #888; }
+        .info-value { color: #e0e0e0; font-family: monospace; font-size: 0.85rem; }
+        .hidden { display: none; }
+        #connectBtn { background: #4caf50; }
+        #connectBtn:hover { background: #388e3c; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Hidden Reverse Auction</h1>
+        <p class="subtitle">Lowest unique bid wins &mdash; commit-reveal on Sepolia</p>
+
+        <!-- Connect -->
+        <div class="card">
+            <h2>Connection</h2>
+            <input type="text" id="contractAddr" placeholder="Contract address (0x...)">
+            <button id="connectBtn" onclick="connectWallet()">Connect Wallet</button>
+            <div id="connInfo" class="hidden">
+                <div class="info-row"><span class="info-label">Wallet</span><span class="info-value" id="walletAddr">-</span></div>
+                <div class="info-row"><span class="info-label">Phase</span><span id="phaseDisplay">-</span></div>
+                <div class="info-row"><span class="info-label">Bidders</span><span class="info-value" id="bidderCount">-</span></div>
+                <div class="info-row"><span class="info-label">Challenge Passed</span><span class="info-value" id="challengeStatus">-</span></div>
+            </div>
+        </div>
+
+        <!-- Commit -->
+        <div class="card" id="commitCard">
+            <h2>1. Commit Bid</h2>
+            <label>Bid Amount (wei)</label>
+            <input type="number" id="bidAmount" placeholder="e.g. 1000000000000000">
+            <label>Secret (bytes32 hex)</label>
+            <input type="text" id="bidSecret" placeholder="0xabcdef... (any 32-byte hex)">
+            <button onclick="generateSecret()" class="btn-secondary">Generate Random Secret</button>
+            <label>Deposit (ETH) — must be &ge; bid amount</label>
+            <input type="text" id="depositAmt" placeholder="e.g. 0.01">
+            <button onclick="computeAndCommit()">Compute Hash &amp; Commit</button>
+            <div id="commitHash" class="status hidden"></div>
+        </div>
+
+        <!-- Reveal -->
+        <div class="card" id="revealCard">
+            <h2>2. Reveal Bid</h2>
+            <label>Bid Amount (wei) — same as committed</label>
+            <input type="number" id="revealAmount" placeholder="Must match your committed amount">
+            <label>Secret (bytes32) — same as committed</label>
+            <input type="text" id="revealSecret" placeholder="0x...">
+            <button onclick="revealBid()">Reveal Bid</button>
+        </div>
+
+        <!-- Actions -->
+        <div class="card">
+            <h2>Actions</h2>
+            <button onclick="advancePhase()" class="btn-secondary">Advance Phase</button>
+            <button onclick="refreshInfo()" class="btn-secondary">Refresh Info</button>
+        </div>
+
+        <!-- Results -->
+        <div class="card" id="resultsCard">
+            <h2>Results</h2>
+            <div class="info-row"><span class="info-label">Winner</span><span class="info-value" id="winnerAddr">-</span></div>
+            <div class="info-row"><span class="info-label">Winning Bid</span><span class="info-value" id="winningBidAmt">-</span></div>
+        </div>
+
+        <!-- Log -->
+        <div class="card">
+            <h2>Log</h2>
+            <div id="log" class="status">Waiting for connection...</div>
+        </div>
+    </div>
+
+<script>
+// Minimal ABI — only the functions we call
+const ABI = [
+    "function getPhase() view returns (string)",
+    "function getBidderCount() view returns (uint256)",
+    "function challengePassed(address) view returns (bool)",
+    "function winner() view returns (address)",
+    "function winningBid() view returns (uint256)",
+    "function computeHash(uint256, bytes32) pure returns (bytes32)",
+    "function commitBid(bytes32) payable",
+    "function revealBid(uint256, bytes32)",
+    "function advancePhase()",
+    "function grantChallenge(address)",
+    "event BidCommitted(address indexed bidder, bytes32 hash)",
+    "event BidRevealed(address indexed bidder, uint256 amount)",
+    "event AuctionSettled(address indexed winner, uint256 winningBid)"
+];
+
+let provider, signer, contract, userAddr;
+
+function log(msg) {
+    const el = document.getElementById('log');
+    el.textContent = msg + '\n' + el.textContent;
+}
+
+async function connectWallet() {
+    try {
+        if (!window.ethereum) { alert('Install MetaMask!'); return; }
+        // Use ethers from CDN (loaded below) or bundled
+        if (typeof ethers === 'undefined') { alert('ethers.js not loaded'); return; }
+
+        provider = new ethers.BrowserProvider(window.ethereum);
+        await provider.send("eth_requestAccounts", []);
+        signer = await provider.getSigner();
+        userAddr = await signer.getAddress();
+
+        const addr = document.getElementById('contractAddr').value.trim();
+        if (!addr) { alert('Enter contract address'); return; }
+
+        contract = new ethers.Contract(addr, ABI, signer);
+
+        document.getElementById('walletAddr').textContent = userAddr.slice(0, 6) + '...' + userAddr.slice(-4);
+        document.getElementById('connInfo').classList.remove('hidden');
+        document.getElementById('connectBtn').textContent = 'Connected';
+        document.getElementById('connectBtn').disabled = true;
+
+        log('Connected: ' + userAddr);
+        await refreshInfo();
+    } catch (e) {
+        log('Error: ' + e.message);
+    }
+}
+
+async function refreshInfo() {
+    if (!contract) return;
+    try {
+        const [phase, count, challenge, w, wb] = await Promise.all([
+            contract.getPhase(),
+            contract.getBidderCount(),
+            contract.challengePassed(userAddr),
+            contract.winner(),
+            contract.winningBid()
+        ]);
+        document.getElementById('phaseDisplay').innerHTML =
+            `<span class="phase-badge phase-${phase}">${phase}</span>`;
+        document.getElementById('bidderCount').textContent = count.toString();
+        document.getElementById('challengeStatus').textContent = challenge ? 'Yes' : 'No';
+        document.getElementById('winnerAddr').textContent = w === '0x0000000000000000000000000000000000000000' ? 'None yet' : w;
+        document.getElementById('winningBidAmt').textContent = wb.toString() === '0' ? '-' : wb.toString() + ' wei';
+        log('Info refreshed — Phase: ' + phase);
+    } catch (e) {
+        log('Refresh error: ' + e.message);
+    }
+}
+
+function generateSecret() {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    const hex = '0x' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    document.getElementById('bidSecret').value = hex;
+    log('Generated random secret (save this!)');
+}
+
+async function computeAndCommit() {
+    if (!contract) { alert('Connect first'); return; }
+    try {
+        const amount = document.getElementById('bidAmount').value;
+        const secret = document.getElementById('bidSecret').value;
+        const deposit = document.getElementById('depositAmt').value;
+
+        if (!amount || !secret || !deposit) { alert('Fill all fields'); return; }
+
+        // Compute hash via contract (or locally)
+        const hash = await contract.computeHash(amount, secret);
+        const hashEl = document.getElementById('commitHash');
+        hashEl.textContent = 'Hash: ' + hash;
+        hashEl.classList.remove('hidden');
+        log('Computed hash: ' + hash);
+
+        // Send commit tx
+        const tx = await contract.commitBid(hash, {
+            value: ethers.parseEther(deposit)
+        });
+        log('Commit tx sent: ' + tx.hash);
+        await tx.wait();
+        log('Commit confirmed!');
+        await refreshInfo();
+    } catch (e) {
+        log('Commit error: ' + (e.reason || e.message));
+    }
+}
+
+async function revealBid() {
+    if (!contract) { alert('Connect first'); return; }
+    try {
+        const amount = document.getElementById('revealAmount').value;
+        const secret = document.getElementById('revealSecret').value;
+        if (!amount || !secret) { alert('Fill all fields'); return; }
+
+        const tx = await contract.revealBid(amount, secret);
+        log('Reveal tx sent: ' + tx.hash);
+        await tx.wait();
+        log('Reveal confirmed!');
+        await refreshInfo();
+    } catch (e) {
+        log('Reveal error: ' + (e.reason || e.message));
+    }
+}
+
+async function advancePhase() {
+    if (!contract) { alert('Connect first'); return; }
+    try {
+        const tx = await contract.advancePhase();
+        log('Advance tx sent: ' + tx.hash);
+        await tx.wait();
+        log('Phase advanced!');
+        await refreshInfo();
+    } catch (e) {
+        log('Advance error: ' + (e.reason || e.message));
+    }
+}
+</script>
+<!-- ethers.js v6 CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.9.0/ethers.umd.min.js"></script>
+</body>
+</html>
